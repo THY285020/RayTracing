@@ -1,7 +1,7 @@
 #include "Renderer.h"
 #include "Walnut/Random.h"
 #include <algorithm>
-
+#include <imgui_internal.h>
 namespace utils
 {
 	static uint32_t Convert2RGBA(const glm::vec4& color)
@@ -33,9 +33,74 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 	m_ImageData = new uint32_t[width * height];
 }
 
-void Renderer::Render()
+static glm::vec3 lightDir = glm::vec3(1.0f, -1.0f, -0.5f);
+
+void Renderer::Render(Scene& scene, Camera& m_Camera)
 {
-	float aspectRatio = m_FinalImage->GetWidth() / m_FinalImage->GetHeight();
+	//light
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+	ImGui::Begin("LightDir");
+	std::string label = "LightDir";
+	ImGui::PushID(label.c_str());
+	ImGui::Columns(2);
+	ImGui::SetColumnWidth(0, 80.f);
+	ImGui::Text(label.c_str());
+	ImGui::NextColumn();
+
+	ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.f, 0.f));
+
+	float lineHeight = GImGui->Font->FontSize + GImGui->Style.FramePadding.y * 2.0f;
+	ImVec2 buttonSize = { lineHeight + 3.0f, lineHeight };
+
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.8f, 0.1f, 0.15f,1.0f });
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ 0.9f, 0.2f, 0.2f,1.0f });
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{ 0.8f, 0.1f, 0.15f,1.0f });
+
+	if (ImGui::Button("X", buttonSize))
+		lightDir.x = 0.f;
+
+	ImGui::PopStyleColor(3);
+	ImGui::SameLine();
+	ImGui::DragFloat("##X", &lightDir.x, 0.1, 0.0, 0.0, "%.2f");
+	ImGui::PopItemWidth();
+	ImGui::SameLine();
+
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.1f, 0.7f, 0.15f,1.0f });
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ 0.2f, 0.8f, 0.2f,1.0f });
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{ 0.1f, 0.7f, 0.15f,1.0f });
+
+	if (ImGui::Button("Y", buttonSize))
+		lightDir.y = 0.f;
+
+	ImGui::PopStyleColor(3);
+	ImGui::SameLine();
+	ImGui::DragFloat("##Y", &lightDir.y, 0.1, 0.0, 0.0, "%.2f");
+	ImGui::PopItemWidth();
+	ImGui::SameLine();
+
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.1f, 0.2f, 0.8f, 1.0f });
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ 0.2f, 0.3f, 0.9f,1.0f });
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{ 0.1f, 0.2f, 0.8f, 1.0f });
+
+	if (ImGui::Button("Z", buttonSize))
+		lightDir.z = 0.f;
+
+	ImGui::PopStyleColor(3);
+	ImGui::SameLine();
+	ImGui::DragFloat("##Z", &lightDir.z, 0.1, 0.0, 0.0, "%.2f");
+	ImGui::PopItemWidth();
+
+	ImGui::PopStyleVar();
+	ImGui::Columns(1);
+	ImGui::PopID();
+	ImGui::End();
+	ImGui::PopStyleVar();
+	//light
+
+	Ray ray;
+	ray.Origin = m_Camera.GetPosition();
+
 	//更新缓冲
 	for (uint32_t y = 0; y < m_FinalImage->GetHeight(); ++y)
 	{
@@ -44,10 +109,10 @@ void Renderer::Render()
 			//映射到0 1
 			glm::vec2 coord = { (float)x / (float)m_FinalImage->GetWidth(), (float)y / (float)m_FinalImage->GetHeight() };
 			coord = 2.0f * coord - 1.0f;//映射到-1 1
-
-			//coord.x *= aspectRatio;
-
-			m_ImageData[x + y* m_FinalImage->GetWidth()] = utils::Convert2RGBA(PerPixel(coord));
+			ray.Direction = m_Camera.GetRayDirections()[ y * m_FinalImage->GetWidth() + x];
+			
+			//屏幕上每一个坐标对应一束虚拟光，通过虚拟光计算颜色
+			m_ImageData[x + y* m_FinalImage->GetWidth()] = utils::Convert2RGBA(TraceRay(scene, ray));
 			//m_ImageData[i] = Walnut::Random::UInt();
 			////m_FinalImageData[i] = 0xffff00ff;//ABGR
 			//m_ImageData[i] |= 0xff000000;//使alpha始终为255
@@ -57,13 +122,12 @@ void Renderer::Render()
 	m_FinalImage->SetData(m_ImageData);
 }
 
-glm::vec4 Renderer::PerPixel(glm::vec2 coord)
+glm::vec4 Renderer::TraceRay(const Scene& scene, const Ray& ray)
 {
-	glm::vec3 rayOrigin(0.0f, 0.0f, 2.0f);
-	glm::vec3 rayDirection(coord.x, coord.y, -1.0f);
+
 	glm::vec3 sphereOrigin(0.0f);
 
-	glm::vec3 lightDirection = glm::normalize(glm::vec3(1.0f, -1.0f, -0.5f));
+	glm::vec3 lightDirection = glm::normalize(lightDir);
 	float radius = 0.5f;
 	// y = a + bt 代入圆方程
 	//(bx^2 + by^2)t^2 + (2(axbx + ayby))t + (ax^2 + ay^2 - r^2) = 0;
@@ -72,9 +136,9 @@ glm::vec4 Renderer::PerPixel(glm::vec2 coord)
 	//r = radius
 	//t = hit distance
 	//At^2 + Bt + C
-	float A = glm::dot(rayDirection, rayDirection);
-	float B = 2.0f * glm::dot(rayOrigin, rayDirection);
-	float C = glm::dot(rayOrigin, rayOrigin) - radius * radius;
+	float A = glm::dot(ray.Direction, ray.Direction);
+	float B = 2.0f * glm::dot(ray.Origin, ray.Direction);
+	float C = glm::dot(ray.Origin, ray.Origin) - radius * radius;
 	//B^2 - 4AC
 	float discriminant = B * B - 4.0 * A * C;
 
@@ -83,8 +147,8 @@ glm::vec4 Renderer::PerPixel(glm::vec2 coord)
 		float t0 = (-B - sqrt(discriminant)) / (2.0f * A);
 		float t1 = (-B + sqrt(discriminant)) / (2.0f * A);
 
-		glm::vec3 hitPos0 = rayOrigin + rayDirection * t0;
-		glm::vec3 hitPos1 = rayOrigin + rayDirection * t1;
+		glm::vec3 hitPos0 = ray.Origin + ray.Direction * t0;
+		glm::vec3 hitPos1 = ray.Origin + ray.Direction * t1;
 
 		glm::vec3 normal0 = hitPos0 - sphereOrigin;
 		glm::vec3 normal1 = hitPos1 - sphereOrigin;
@@ -92,18 +156,15 @@ glm::vec4 Renderer::PerPixel(glm::vec2 coord)
 		normal0 = glm::normalize(normal0);
 		normal1 = glm::normalize(normal1);
 
-		float cos = glm::max(glm::dot(normal0, -lightDirection), 0.0f);//光照
+		float cos = glm::max(glm::dot(normal0, -lightDirection), 0.0f);//光照强度
 
-		//float r = (normal0.x + 1.0) * 0.5 * (cos + 1.0) * 0.5;
-		//float g = (normal0.y + 1.0) * 0.5 * (cos + 1.0) * 0.5;
-		//float b = (normal0.z + 1.0) * 0.5 * (cos + 1.0) * 0.5;
+		glm::vec4 color((normal0 + 1.0f)* 0.5f * cos, 1.0f);//(cos + 1.0) * 0.5
 
-		glm::vec4 color((normal0 + 1.0f)* 0.5f * cos, 1.0f);
 		return color;
 	}
 
 	//背景	
-	float t_ = 0.5 * (rayDirection.y + 1.0f);//y越大，越蓝
+	float t_ = 0.5 * (ray.Direction.y + 1.0f);//y越大，越蓝
 	glm::vec4 color(((1.0f - t_) * glm::vec3(1.0f) + t_ * glm::vec3(0.5, 0.7, 1.0)), 1.0f);
 
 	return color;
