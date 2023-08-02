@@ -7,12 +7,28 @@
 #include "Renderer.h"
 
 #include <imgui_internal.h>
+#include <glm/gtc/type_ptr.hpp>
 
 class ExampleLayer : public Walnut::Layer
 {
 public:
 	ExampleLayer() :m_Camera(45.0f, 0.1f, 100.f)
 	{
+		{
+			Sphere sphere;
+			sphere.Position = { 0.f, 0.f, 0.f };
+			sphere.Radius = 0.5f;
+			sphere.Albedo = { 1.0f, 0.0f, 1.0f };
+			m_Scene.Spheres.push_back(sphere);
+		}
+
+		{
+			Sphere sphere;
+			sphere.Position = { 1.f, 0.f, -5.f };
+			sphere.Radius = 1.5f;
+			sphere.Albedo = { 0.2f, 0.3f, 1.0f };
+			m_Scene.Spheres.push_back(sphere);
+		}
 	}
 	virtual void OnUpdate(float ts) override
 	{
@@ -28,7 +44,20 @@ public:
 		{
 			Render();
 		}
-		
+		ImGui::End();
+
+		ImGui::Begin("Scene");
+		for (size_t i = 0; i<m_Scene.Spheres.size(); ++i)
+		{
+			ImGui::PushID(i);
+			Sphere& sphere = m_Scene.Spheres[i];
+			ImGui::Text("Sphere %d", i);
+			ImGui::DragFloat3("Position", glm::value_ptr(sphere.Position), 0.1f);
+			ImGui::DragFloat("Radius", &sphere.Radius, 0.1f);
+			ImGui::ColorEdit3("Abedo", glm::value_ptr(sphere.Albedo));
+			ImGui::Separator();
+			ImGui::PopID();
+		}
 		ImGui::End();
 
 

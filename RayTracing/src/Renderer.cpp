@@ -33,7 +33,7 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 	m_ImageData = new uint32_t[width * height];
 }
 
-static glm::vec3 lightDir = glm::vec3(1.0f, -1.0f, -0.5f);
+static glm::vec3 lightDir = glm::vec3(-1.0f, -1.0f, -1.0f);
 
 void Renderer::Render(Scene& scene, Camera& m_Camera)
 {
@@ -99,7 +99,7 @@ void Renderer::Render(Scene& scene, Camera& m_Camera)
 	//light
 
 	Ray ray;
-	ray.Origin = m_Camera.GetPosition();
+	ray.Origin = m_Camera.GetPosition();//此处camera非世界坐标，只是camera在原点时，世界坐标原点会在中心
 
 	//更新缓冲
 	for (uint32_t y = 0; y < m_FinalImage->GetHeight(); ++y)
@@ -124,49 +124,62 @@ void Renderer::Render(Scene& scene, Camera& m_Camera)
 
 glm::vec4 Renderer::TraceRay(const Scene& scene, const Ray& ray)
 {
+	if (scene.Spheres.size() == 0) return glm::vec4(0, 0, 0, 1);
 
-	glm::vec3 sphereOrigin(0.0f);
-
-	glm::vec3 lightDirection = glm::normalize(lightDir);
-	float radius = 0.5f;
-	// y = a + bt 代入圆方程
-	//(bx^2 + by^2)t^2 + (2(axbx + ayby))t + (ax^2 + ay^2 - r^2) = 0;
-	//a = origin
-	//b = direction
-	//r = radius
-	//t = hit distance
-	//At^2 + Bt + C
-	float A = glm::dot(ray.Direction, ray.Direction);
-	float B = 2.0f * glm::dot(ray.Origin, ray.Direction);
-	float C = glm::dot(ray.Origin, ray.Origin) - radius * radius;
-	//B^2 - 4AC
-	float discriminant = B * B - 4.0 * A * C;
-
-	if (discriminant >= 0.0)//有解，与球体相交
+	const Sphere* closestSphere = nullptr;
+	float hitDistance = FLT_MAX;
+	for (const Sphere& sphere : scene.Spheres)
 	{
-		float t0 = (-B - sqrt(discriminant)) / (2.0f * A);
-		float t1 = (-B + sqrt(discriminant)) / (2.0f * A);
+		glm::vec3 sphereOrigin = sphere.Position;
+		glm::vec3 origin = ray.Origin - sphereOrigin;//实际是虚拟光线反向移动
 
-		glm::vec3 hitPos0 = ray.Origin + ray.Direction * t0;
-		glm::vec3 hitPos1 = ray.Origin + ray.Direction * t1;
+		// y = a + bt 代入圆方程
+		//(bx^2 + by^2)t^2 + (2(axbx + ayby))t + (ax^2 + ay^2 - r^2) = 0;
+		//a = origin
+		//b = direction
+		//r = radius
+		//t = hit distance
+		//At^2 + Bt + C
+		float A = glm::dot(ray.Direction, ray.Direction);
+		float B = 2.0f * glm::dot(origin, ray.Direction);
+		float C = glm::dot(origin, origin) - sphere.Radius * sphere.Radius;
+		//B^2 - 4AC
+		float discriminant = B * B - 4.0 * A * C;
 
-		glm::vec3 normal0 = hitPos0 - sphereOrigin;
-		glm::vec3 normal1 = hitPos1 - sphereOrigin;
+		if (discriminant >= 0.0)//有解，与球体相交
+		{
+			float t0 = (-B - sqrt(discriminant)) / (2.0f * A);
+			//float t1 = (-B + sqrt(discriminant)) / (2.0f * A);
 
-		normal0 = glm::normalize(normal0);
-		normal1 = glm::normalize(normal1);
-
-		float cos = glm::max(glm::dot(normal0, -lightDirection), 0.0f);//光照强度
-
-		glm::vec4 color((normal0 + 1.0f)* 0.5f * cos, 1.0f);//(cos + 1.0) * 0.5
-
-		return color;
+			if (t0 < hitDistance)
+			{
+				hitDistance = t0;
+				closestSphere = &sphere;
+			}	
+		}
 	}
 
-	//背景	
-	float t_ = 0.5 * (ray.Direction.y + 1.0f);//y越大，越蓝
-	glm::vec4 color(((1.0f - t_) * glm::vec3(1.0f) + t_ * glm::vec3(0.5, 0.7, 1.0)), 1.0f);
+	if (closestSphere == nullptr) 
+		return glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+	
+	glm::vec3 lightDirection = glm::normalize(lightDir);
+	glm::vec3 origin = ray.Origin - closestSphere->Position;
 
+	glm::vec3 hitPos0 = origin + ray.Direction * hitDistance;
+	//glm::vec3 hitPos1 = ray.Origin + ray.Direction * t1;
+
+	glm::vec3 normal0 = glm::normalize(hitPos0);
+	//glm::vec3 normal1 = hitPos1 - origin;
+
+	float cos = glm::max(glm::dot(normal0, -lightDirection), 0.0f);//光照强度
+
+	//glm::vec4 color((normal0 + 1.0f)* 0.5f * cos, 1.0f);//(cos + 1.0) * 0.5
+	glm::vec4 color(closestSphere->Albedo * cos, 1.0f);
 	return color;
+
+	//原背景色	
+	//float t_ = 0.5 * (ray.Direction.y + 1.0f);//y越大，越蓝
+	//glm::vec4 color(((1.0f - t_) * glm::vec3(1.0f) + t_ * glm::vec3(0.5, 0.7, 1.0)), 1.0f);
 }
+
 

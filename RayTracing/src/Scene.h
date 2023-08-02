@@ -5,8 +5,8 @@
 struct Sphere
 {
 	glm::vec3 Position{ 1.0f };
-	float radius = 0.5f;
-	glm::vec4 Albedo{ 1.0f };
+	float Radius = 0.5f;
+	glm::vec3 Albedo{ 1.0f };
 };
 
 struct Scene
