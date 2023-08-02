@@ -2,6 +2,9 @@
 #include "Walnut/Random.h"
 #include <algorithm>
 #include <imgui_internal.h>
+
+//PerPixel->TraceRay(循环多次计算bounce)->ClosetHit/Miss
+//像素-》逆变换（proj 透视除法 view）求出虚拟光线方向-》计算虚拟光线碰撞-》返回颜色到像素缓存-》输出
 namespace utils
 {
 	static uint32_t Convert2RGBA(const glm::vec4& color)
@@ -35,8 +38,10 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 
 static glm::vec3 lightDir = glm::vec3(-1.0f, -1.0f, -1.0f);
 
-void Renderer::Render(Scene& scene, Camera& m_Camera)
+void Renderer::Render(Scene& scene, Camera& camera)
 {
+	m_ActiveScene = &scene;
+	m_ActiveCamera = &camera;
 	//light
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 	ImGui::Begin("LightDir");
@@ -98,21 +103,15 @@ void Renderer::Render(Scene& scene, Camera& m_Camera)
 	ImGui::PopStyleVar();
 	//light
 
-	Ray ray;
-	ray.Origin = m_Camera.GetPosition();//此处camera非世界坐标，只是camera在原点时，世界坐标原点会在中心
-
 	//更新缓冲
 	for (uint32_t y = 0; y < m_FinalImage->GetHeight(); ++y)
 	{
 		for (uint32_t x = 0; x < m_FinalImage->GetWidth(); ++x)
 		{
-			//映射到0 1
-			glm::vec2 coord = { (float)x / (float)m_FinalImage->GetWidth(), (float)y / (float)m_FinalImage->GetHeight() };
-			coord = 2.0f * coord - 1.0f;//映射到-1 1
-			ray.Direction = m_Camera.GetRayDirections()[ y * m_FinalImage->GetWidth() + x];
+			glm::vec4 color = PerPixel(x, y);
 			
 			//屏幕上每一个坐标对应一束虚拟光，通过虚拟光计算颜色
-			m_ImageData[x + y* m_FinalImage->GetWidth()] = utils::Convert2RGBA(TraceRay(scene, ray));
+			m_ImageData[x + y* m_FinalImage->GetWidth()] = utils::Convert2RGBA(color);
 			//m_ImageData[i] = Walnut::Random::UInt();
 			////m_FinalImageData[i] = 0xffff00ff;//ABGR
 			//m_ImageData[i] |= 0xff000000;//使alpha始终为255
@@ -122,16 +121,52 @@ void Renderer::Render(Scene& scene, Camera& m_Camera)
 	m_FinalImage->SetData(m_ImageData);
 }
 
-glm::vec4 Renderer::TraceRay(const Scene& scene, const Ray& ray)
+glm::vec4 Renderer::PerPixel(uint32_t x, uint32_t y)
 {
-	if (scene.Spheres.size() == 0) return glm::vec4(0, 0, 0, 1);
+	Ray ray;
+	ray.Origin = m_ActiveCamera->GetPosition();
+	ray.Direction = m_ActiveCamera->GetRayDirections()[y * m_FinalImage->GetWidth() + x];
 
-	const Sphere* closestSphere = nullptr;
-	float hitDistance = FLT_MAX;
-	for (const Sphere& sphere : scene.Spheres)
+	glm::vec3 color(0.0f);
+	float multiplier = 1.0f;
+
+	int bounces = 2;
+	for (int i = 0; i < bounces; ++i)
 	{
+		Renderer::HitPayload payload = TraceRay(ray);
+		if (payload.HitDistance < 0)
+		{
+			glm::vec3 skyColor = glm::vec3(0.0f);
+			color += skyColor * multiplier;
+			break;
+		}
+
+		const Sphere& Hitsphere = m_ActiveScene->Spheres[payload.ObjectIndex];
+		float cos = glm::max(glm::dot(payload.WorldNormal, -glm::normalize(lightDir)), 0.0f);//光照强度
+		glm::vec3 sphereColor(Hitsphere.Albedo * cos);
+		color += (sphereColor * multiplier);
+
+		multiplier *= 0.7f;
+	
+		ray.Origin = payload.WorldPosition + payload.WorldNormal * 0.001f;
+		ray.Direction = glm::reflect(ray.Direction, payload.WorldNormal);
+	}
+
+	return glm::vec4(color, 1.0f);
+}
+
+Renderer::HitPayload Renderer::TraceRay(const Ray& ray)
+{
+	if (m_ActiveScene->Spheres.size() == 0) return Miss(ray);
+
+	int closestSphereIndex = -1;
+	float hitDistance = FLT_MAX;
+
+	for (size_t i = 0; i < m_ActiveScene->Spheres.size(); ++i)
+	{
+		const Sphere& sphere = m_ActiveScene->Spheres[i];
 		glm::vec3 sphereOrigin = sphere.Position;
-		glm::vec3 origin = ray.Origin - sphereOrigin;//实际是虚拟光线反向移动
+		glm::vec3 origin = ray.Origin - sphereOrigin;//实际是虚拟光线反向移动，计算交点时使用相机与物体的相对位置
 
 		// y = a + bt 代入圆方程
 		//(bx^2 + by^2)t^2 + (2(axbx + ayby))t + (ax^2 + ay^2 - r^2) = 0;
@@ -151,35 +186,51 @@ glm::vec4 Renderer::TraceRay(const Scene& scene, const Ray& ray)
 			float t0 = (-B - sqrt(discriminant)) / (2.0f * A);
 			//float t1 = (-B + sqrt(discriminant)) / (2.0f * A);
 
-			if (t0 < hitDistance)
+			if (t0 > 0.0f && t0 < hitDistance)//确保大于0防止，位置移动到镜头却渲染背面
 			{
 				hitDistance = t0;
-				closestSphere = &sphere;
-			}	
+				closestSphereIndex = (int)i;
+			}
 		}
 	}
 
-	if (closestSphere == nullptr) 
-		return glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-	
-	glm::vec3 lightDirection = glm::normalize(lightDir);
-	glm::vec3 origin = ray.Origin - closestSphere->Position;
+	if (closestSphereIndex < 0)
+		return Miss(ray);
 
-	glm::vec3 hitPos0 = origin + ray.Direction * hitDistance;
-	//glm::vec3 hitPos1 = ray.Origin + ray.Direction * t1;
-
-	glm::vec3 normal0 = glm::normalize(hitPos0);
-	//glm::vec3 normal1 = hitPos1 - origin;
-
-	float cos = glm::max(glm::dot(normal0, -lightDirection), 0.0f);//光照强度
-
-	//glm::vec4 color((normal0 + 1.0f)* 0.5f * cos, 1.0f);//(cos + 1.0) * 0.5
-	glm::vec4 color(closestSphere->Albedo * cos, 1.0f);
-	return color;
+	return ClosetHit(ray, hitDistance, closestSphereIndex);
 
 	//原背景色	
 	//float t_ = 0.5 * (ray.Direction.y + 1.0f);//y越大，越蓝
 	//glm::vec4 color(((1.0f - t_) * glm::vec3(1.0f) + t_ * glm::vec3(0.5, 0.7, 1.0)), 1.0f);
 }
+
+//碰撞点的计算法线和世界坐标
+Renderer::HitPayload Renderer::ClosetHit(const Ray& ray, float hitDistance, int objectIndex)
+{
+	Renderer::HitPayload payload;
+	payload.HitDistance = hitDistance;
+	payload.ObjectIndex = objectIndex;
+
+	const Sphere& closestSphere = m_ActiveScene->Spheres[objectIndex];
+
+	glm::vec3 origin = ray.Origin - closestSphere.Position;//转换为局部坐标，相机与物体的相对位置
+
+	glm::vec3 hitPos0 = origin + ray.Direction * hitDistance;
+	//glm::vec3 hitPos1 = ray.Origin + ray.Direction * t1;
+
+	payload.WorldNormal = glm::normalize(hitPos0);
+	//glm::vec3 normal1 = hitPos1 - origin;
+	payload.WorldPosition = hitPos0 + closestSphere.Position;//上面计算减了，要加回去
+
+	return payload;
+}
+
+Renderer::HitPayload Renderer::Miss(const Ray& ray)
+{
+	Renderer::HitPayload payload;
+	payload.HitDistance = -1.0f;
+	return payload;
+}
+
 
 
